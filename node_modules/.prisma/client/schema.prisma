@@ -1,0 +1,569 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+/**
+ * ========= Enums =========
+ */
+
+enum user_role {
+  player
+  admin
+  moderator
+  curator
+  support
+  readonly
+}
+
+enum user_status {
+  active
+  review
+  restricted
+  suspended
+  banned
+  shadowban
+}
+
+enum profile_status {
+  active
+  review
+  suspended
+  banned
+  shadowban
+  archived
+}
+
+enum media_status {
+  pending
+  approved
+  rejected
+  takedown
+  archived
+}
+
+enum media_type {
+  image
+  video
+}
+
+enum media_source {
+  upload
+  external
+}
+
+enum boost_status {
+  scheduled
+  active
+  expired
+  canceled
+}
+
+enum provider_kind {
+  stripe
+  mercadopago
+  other
+}
+
+enum report_status {
+  open
+  in_review
+  closed
+}
+
+enum report_reason {
+  abuse
+  harassment
+  spam
+  fraud
+  nsfw
+  illegal
+  other
+}
+
+enum severity_level {
+  low
+  medium
+  high
+}
+
+enum ticket_status {
+  open
+  pending
+  closed
+}
+
+enum ticket_priority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum announcement_status {
+  draft
+  published
+  expired
+}
+
+enum feature_slot_key {
+  home_hero
+  home_rail
+  sidebar_banner
+}
+
+enum setting_status {
+  active
+  inactive
+}
+
+enum audit_status {
+  success
+  failed
+}
+
+enum webhook_status {
+  received
+  processed
+  failed
+}
+
+enum contact_channel {
+  email
+  whatsapp
+  twitch
+  youtube
+  instagram
+  other
+}
+
+/**
+ * ========= Models =========
+ */
+
+model user {
+  id            String      @id @default(auto()) @map("_id") @db.ObjectId
+  email         String      @unique
+  password_hash String
+  role          user_role   @default(player)
+  status        user_status @default(active)
+
+  // relações
+  profile          profile?
+  tickets          support_ticket[] @relation("ticket_user")
+  assigned_tickets support_ticket[] @relation("ticket_assignee")
+  reports_made     report[]
+  notes_authored   user_note[]
+  sessions         session[]
+
+  // metadados
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([status])
+  @@index([deleted_at])
+  @@map("user")
+}
+
+model profile {
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  user_id           String  @unique @db.ObjectId
+  username          String  @unique
+  display_name      String
+  bio               String?
+  avatar_url        String? // URL da foto de perfil
+  state             String // UF ex: "SP"
+  city              String
+  city_slug         String? // ex: "sao-paulo"
+  contact_email     String?
+  whatsapp          String?
+  twitch            String?
+  youtube           String?
+  instagram         String?
+  featured_media_id String? @db.ObjectId
+  tags_count        Int? // denormalização opcional
+
+  status profile_status @default(active)
+
+  // relações
+  user                 user                  @relation(fields: [user_id], references: [id])
+  media                media[]
+  boosts               boost[]
+  strikes              strike[]
+  notes                user_note[]
+  contact_events       contact_event[]
+  reports_against      report[]              @relation("profile_reports")
+  player_tags          player_tag[]
+  featured_assignments featured_assignment[]
+
+  // metadados
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([state, city])
+  @@index([status])
+  @@index([deleted_at])
+  @@map("profile")
+}
+
+model media {
+  id        String       @id @default(auto()) @map("_id") @db.ObjectId
+  player_id String       @db.ObjectId
+  type      media_type
+  source    media_source @default(upload)
+
+  url           String
+  poster_url    String?
+  blur_data_url String?
+  width         Int?
+  height        Int?
+  duration_sec  Int?
+  focal_point_x Int? // 0–100
+  focal_point_y Int? // 0–100
+  variants      Json? // [{label,url,width,height,bitrate_kbps}]
+  hls_url       String? // se houver transcoding
+  nsfw_score    Float?
+  nsfw_labels   Json?
+
+  title      String?
+  tags_cache String[] // denormalização leve para discover
+  status     media_status @default(pending)
+
+  // relações
+  player               profile               @relation(fields: [player_id], references: [id])
+  reports_against      report[]              @relation("media_reports")
+  featured_assignments featured_assignment[]
+
+  // auditoria leve
+  moderation_history Json? // [{status,reason,at,by_user_id}]
+
+  // metadados
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([player_id, status])
+  @@index([status, created_at])
+  @@index([deleted_at])
+  @@map("media")
+}
+
+model tag {
+  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  slug    String   @unique // "valorant"
+  label   String // "Valorant"
+  aliases String[] // ["valo"]
+
+  status setting_status @default(active)
+
+  // relações
+  player_tags player_tag[]
+
+  // metadados
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([status])
+  @@index([deleted_at])
+  @@map("tag")
+}
+
+model player_tag {
+  id        String @id @default(auto()) @map("_id") @db.ObjectId
+  player_id String @db.ObjectId
+  tag_id    String @db.ObjectId
+
+  status setting_status @default(active)
+
+  // relações
+  player  profile @relation(fields: [player_id], references: [id])
+  tag_ref tag     @relation(fields: [tag_id], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@unique([player_id, tag_id])
+  @@index([player_id])
+  @@index([tag_id])
+  @@index([deleted_at])
+  @@map("player_tag")
+}
+
+model boost {
+  id        String       @id @default(auto()) @map("_id") @db.ObjectId
+  player_id String       @db.ObjectId
+  status    boost_status @default(scheduled)
+  starts_at DateTime
+  ends_at   DateTime
+
+  provider     provider_kind @default(stripe)
+  external_id  String? // checkout/session/txn id (somente referência)
+  amount_cents Int
+  currency     String        @default("BRL")
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  // relação
+  player profile @relation(fields: [player_id], references: [id])
+
+  @@index([player_id, status, ends_at])
+  @@index([status, ends_at])
+  @@index([deleted_at])
+  @@map("boost")
+}
+
+model report {
+  id               String         @id @default(auto()) @map("_id") @db.ObjectId
+  reporter_user_id String?        @db.ObjectId
+  target_type      String // "media" | "profile" | "user"
+  target_id        String         @db.ObjectId
+  reason           report_reason
+  details          String?
+  severity         severity_level @default(low)
+  status           report_status  @default(open)
+  resolution_note  String?
+
+  // relações (multialvo via rel names)
+  media_target   media?   @relation("media_reports", fields: [target_id], references: [id])
+  profile_target profile? @relation("profile_reports", fields: [target_id], references: [id])
+  reporter_user  user?    @relation(fields: [reporter_user_id], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([status, severity])
+  @@index([target_type, target_id])
+  @@index([deleted_at])
+  @@map("report")
+}
+
+model strike {
+  id         String         @id @default(auto()) @map("_id") @db.ObjectId
+  player_id  String         @db.ObjectId
+  reason     String
+  severity   severity_level @default(medium)
+  expires_at DateTime?
+  status     setting_status @default(active)
+
+  player profile @relation(fields: [player_id], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([player_id, status])
+  @@index([deleted_at])
+  @@map("strike")
+}
+
+model user_note {
+  id        String         @id @default(auto()) @map("_id") @db.ObjectId
+  player_id String         @db.ObjectId
+  author_id String         @db.ObjectId
+  note      String
+  status    setting_status @default(active)
+
+  player profile @relation(fields: [player_id], references: [id])
+  author user    @relation(fields: [author_id], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([player_id])
+  @@index([author_id])
+  @@index([deleted_at])
+  @@map("user_note")
+}
+
+model announcement {
+  id              String              @id @default(auto()) @map("_id") @db.ObjectId
+  title           String
+  body_md         String
+  status          announcement_status @default(draft)
+  starts_at       DateTime?
+  ends_at         DateTime?
+  segment_tags    String[] // alvo por tags
+  segment_states  String[] // alvo por UF
+  segment_devices String[] // ex: ["mobile","desktop"]
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([status, starts_at, ends_at])
+  @@index([deleted_at])
+  @@map("announcement")
+}
+
+model feature_slot {
+  id          String           @id @default(auto()) @map("_id") @db.ObjectId
+  slot_key    feature_slot_key @unique
+  description String?
+  status      setting_status   @default(active)
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([status])
+  @@index([deleted_at])
+  @@map("feature_slot")
+}
+
+model featured_assignment {
+  id        String           @id @default(auto()) @map("_id") @db.ObjectId
+  slot_key  feature_slot_key
+  player_id String           @db.ObjectId
+  media_id  String?          @db.ObjectId
+  starts_at DateTime
+  ends_at   DateTime
+  priority  Int              @default(0)
+  status    setting_status   @default(active)
+
+  player    profile @relation(fields: [player_id], references: [id])
+  media_ref media?  @relation(fields: [media_id], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([slot_key, status, starts_at, ends_at])
+  @@index([player_id])
+  @@index([deleted_at])
+  @@map("featured_assignment")
+}
+
+model setting {
+  id         String         @id @default(auto()) @map("_id") @db.ObjectId
+  key        String         @unique // ex: "content_policy_v1", "limits"
+  value_json Json
+  status     setting_status @default(active)
+  version    Int            @default(1)
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([status])
+  @@index([deleted_at])
+  @@map("setting")
+}
+
+model support_ticket {
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  user_id     String?         @db.ObjectId
+  email       String?
+  subject     String
+  message     String
+  priority    ticket_priority @default(medium)
+  status      ticket_status   @default(open)
+  assigned_to String?         @db.ObjectId
+
+  user     user? @relation("ticket_user", fields: [user_id], references: [id])
+  assignee user? @relation("ticket_assignee", fields: [assigned_to], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([status, priority])
+  @@index([assigned_to])
+  @@index([deleted_at])
+  @@map("support_ticket")
+}
+
+model contact_event {
+  id           String          @id @default(auto()) @map("_id") @db.ObjectId
+  player_id    String          @db.ObjectId
+  channel      contact_channel
+  requester_ip String?
+  user_agent   String?
+  referrer     String?
+  message      String?
+  status       setting_status  @default(active)
+
+  player profile @relation(fields: [player_id], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([player_id])
+  @@index([deleted_at])
+  @@map("contact_event")
+}
+
+model audit_log {
+  id            String       @id @default(auto()) @map("_id") @db.ObjectId
+  actor_user_id String?      @db.ObjectId
+  actor_role    user_role?
+  entity_type   String // "media" | "profile" | "user" | "boost" | ...
+  entity_id     String       @db.ObjectId
+  action        String // "approve" | "reject" | "ban" | ...
+  payload       Json?
+  status        audit_status @default(success)
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([entity_type, entity_id])
+  @@index([actor_user_id])
+  @@index([deleted_at])
+  @@map("audit_log")
+}
+
+model webhook_event {
+  id            String         @id @default(auto()) @map("_id") @db.ObjectId
+  provider      provider_kind
+  event_type    String
+  payload       Json
+  related_type  String? // "boost" | "user" | ...
+  related_id    String?        @db.ObjectId
+  status        webhook_status @default(received)
+  retry_count   Int            @default(0)
+  last_error    String?
+  next_retry_at DateTime?
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([provider, event_type, status])
+  @@index([related_type, related_id])
+  @@index([deleted_at])
+  @@map("webhook_event")
+}
+
+model session {
+  id            String         @id @default(auto()) @map("_id") @db.ObjectId
+  user_id       String         @db.ObjectId
+  session_token String         @unique
+  ip            String?
+  user_agent    String?
+  expires_at    DateTime
+  status        setting_status @default(active)
+
+  user user @relation(fields: [user_id], references: [id])
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
+
+  @@index([user_id, status])
+  @@index([deleted_at])
+  @@map("session")
+}
